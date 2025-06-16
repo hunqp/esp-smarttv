@@ -388,7 +388,7 @@ void RenderGuiCalls()
 
     const char *HTTP_USERNAME = (const char *)"";
     const char *HTTP_PASSWORD = (const char *)"";
-    std::string HTTP_SERVER = "https://vf-mini.onrender.com";
+    std::string HTTP_SERVER = "https://vf-mini.onrender.com" + "/api/users/fxce/" + UUID;
 
     if (millis() - lastTime > 5000)
     {
