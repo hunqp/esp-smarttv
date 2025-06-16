@@ -1,9 +1,9 @@
 #include <WiFiClient.h>
 #include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
-#include <WiFiUdp.h>
-#include <NTPClient.h>
+#include <WiFiClientSecureBearSSL.h>
 #include <TFT_eSPI.h>
 #include <ArduinoJson.h>
 #include "wallpaper.h"
@@ -13,15 +13,13 @@
 #define DEFAULT_AP_SSID (char *)"AP_VF_MEDUSA"
 #define DEFAULT_AP_PSSK (char *)"88888888"
 
-static WiFiUDP wiFiUDP;
-static NTPClient ntp(wiFiUDP, "pool.ntp.org");
-
-static String UUID = "";
+static String APIS = "";
 static String SSID = "";
 static String PSSK = "";
-static bool bInternetConnected = false;
 static ESP8266WebServer wserver(80);
+static bool bInternetConnected = false;
 static char ListWiFis[LIST_WIFIS_SIZE][64];
+static X509List cert(CERTIFICATE);
 static TFT_eSPI gui = TFT_eSPI(WALLPAPER_WID, WALLPAPER_HEI);
 
 static void WiFiSetup();
@@ -46,7 +44,7 @@ void setup(void)
     gui.pushImage(0, 0, WALLPAPER_WID, WALLPAPER_HEI, WALLPAPER_BITMAP);
 
     EEPROM.begin(512);
-    getUuId(UUID);
+    delay(1000);
     WiFiSetup();
 
     wserver.on("/", ImplSrvSideLogin);
@@ -56,13 +54,8 @@ void setup(void)
     wserver.on("/disconnected", ImplSrvSideDisconnected);
     wserver.begin();
 
-    // Set offset time in seconds to adjust for your timezone, for example:
-    // GMT +1 = 3600
-    // GMT +8 = 28800
-    // GMT -1 = -3600
-    // GMT 0 = 0
-    ntp.begin();
-    ntp.setTimeOffset(0);
+    /* Set time via NTP, as required for x.509 validation */
+    configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 }
 
 void loop()
@@ -154,13 +147,16 @@ void WiFiSetup()
 {
     getSsId(SSID);
     getPssk(PSSK);
+    getAPIs(APIS);
     Serial.printf("[PREFETCH] SSID: %s\r\n", SSID.c_str());
-    Serial.printf("[PREFETCH] PSSK: %s\r\n", PSSK.c_str());
+    Serial.printf("[PREFETCH] PSSK: %s\r\n", PSSK.c_str());    
+    Serial.printf("[PREFETCH] APIS: %s\r\n", APIS.c_str());
 
     if (IsASCII(SSID.c_str(), SSID.length()) && IsASCII(PSSK.c_str(), PSSK.length()))
     {
         if (staEntrance(SSID.c_str(), PSSK.c_str()))
         {
+            bInternetConnected = true;
             return;
         }
     }
@@ -196,16 +192,16 @@ void ImplSrvSideLogin()
             <div class="container">
                 <h2>Wi-Fi Setup</h2>
                 <form method='POST' action='/connecting' onsubmit="saveCreds()">
-                    <label for='id'>UUID</label>
+                    <label for='id'>HTTP GET</label>
     )rawliteral";
 
-    if (UUID.length())
+    if (APIS.length() && IsASCII(APIS.c_str(), APIS.length()))
     {
-        HomePage += "<input type='text' name='uuid' id='uuid' value='" + UUID + "' required>";
+        HomePage += "<input type='text' name='apis' id='apis' value='" + APIS + "'>";
     }
     else
     {
-        HomePage += "<input type='text' name='uuid' id='uuid' required>";
+        HomePage += "<input type='text' name='apis' id='apis'>";
     }
 
     HomePage += R"rawliteral(
@@ -234,10 +230,10 @@ void ImplSrvSideLogin()
                     input.type = input.type === 'password' ? 'text' : 'password';
                 }
                 function saveCreds() {
-                    const uuid = document.getElementById('uuid').value;
+                    const apis = document.getElementById('apis').value;
                     const ssid = document.getElementById('ssid').value;
                     const password = document.getElementById('password').value;
-                    sessionStorage.setItem("uuid", uuid);
+                    sessionStorage.setItem("apis", apis);
                     sessionStorage.setItem("ssid", ssid);
                     sessionStorage.setItem("password", password);
                 }
@@ -268,7 +264,7 @@ void ImplSrvSideConnecting()
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            uuid: sessionStorage.getItem("uuid"),
+                            apis: sessionStorage.getItem("apis"),
                             ssid: sessionStorage.getItem("ssid"),
                             password: sessionStorage.getItem("password")
                         })
@@ -301,13 +297,13 @@ void ImplSrvSideLoading()
     StaticJsonDocument<200> doc;
     deserializeJson(doc, wserver.arg("plain"));
 
-    String uuid = doc["uuid"] | "";
+    String apis = doc["apis"] | "";
     String StaSsId = doc["ssid"] | "";
     String StaPssk = doc["password"] | "";
 
-    if (uuid.length()) {
-        UUID = uuid;
-        setUuId(UUID);
+    if (apis.length()) {
+        APIS = apis;
+        setAPIs(APIS);
     }
 
     Serial.printf("Trying SSID: %s, PSSK: %s\n", StaSsId.c_str(), StaPssk.c_str());
@@ -317,10 +313,17 @@ void ImplSrvSideLoading()
     if (staEntrance(StaSsId.c_str(), StaPssk.c_str()))
     {
         response["connected"] = true;
+        bInternetConnected = true;
 
         /* Save credentials */
         setSsId(StaSsId);
         setPssk(StaPssk);
+        // SSID = StaSsId;
+        // PSSK = StaPssk;
+
+        getSsId(SSID);
+        getPssk(PSSK);
+        Serial.printf("Save SSID: %s, PSSK: %s\n", StaSsId.c_str(), StaPssk.c_str());
     }
     else
     {
@@ -352,11 +355,11 @@ void ImplSrvSideConnected()
     )rawliteral";
 
     page.replace("%IP%", WiFi.localIP().toString());
-    wserver.send(200, "text/html", page);
-
-    delay(1000);
-    bInternetConnected = true;
-    WiFi.softAPdisconnect(true);
+    if (bInternetConnected) {
+        wserver.send(200, "text/html", page);
+        delay(1000);
+        WiFi.softAPdisconnect(true);
+    }
 }
 
 void ImplSrvSideDisconnected()
@@ -386,34 +389,38 @@ void RenderGuiCalls()
 {
     static uint32_t lastTime = 0;
 
-    const char *HTTP_USERNAME = (const char *)"";
-    const char *HTTP_PASSWORD = (const char *)"";
-    std::string HTTP_SERVER = "https://vf-mini.onrender.com" + "/api/users/fxce/" + UUID;
+    /* https://vf-mini.onrender.com/api/users/fbs/123655 */
+    /* echo | openssl s_client -connect vf-mini.onrender.com:443 | openssl x509 -noout -fingerprint -sha1 */
 
     if (millis() - lastTime > 5000)
     {
         lastTime = millis();
 
-        HTTPClient http;
-        WiFiClient client;
+        HTTPClient https;
+        std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
+        client->setFingerprint("64:51:B0:DA:30:C9:FB:16:C5:4C:95:9B:49:AB:07:EE:CF:10:EB:4E");
 
-        http.begin(client, HTTP_SERVER.c_str());
-        http.setAuthorization(HTTP_USERNAME, HTTP_PASSWORD);
-        int response = http.GET();
+        Serial.print("[HTTPS] begin...\n");
+        if (https.begin(*client, "https://vf-mini.onrender.com/api/users/fbs/123655")) {
 
-        if (response > 0)
-        {
-            Serial.print("HTTP Response code: ");
-            Serial.println(response);
-            String payload = http.getString();
-            Serial.println(payload);
+            Serial.print("[HTTPS] GET...\n");
+            int ret = https.GET();
+
+            if (ret > 0) {
+                Serial.printf("[HTTPS] GET... code: %d\n", ret);
+
+                if (ret == HTTP_CODE_OK || ret == HTTP_CODE_MOVED_PERMANENTLY) {
+                String payload = https.getString();
+                Serial.println(payload);
+                }
+            } else {
+                Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(ret).c_str());
+            }
+            https.end();
+        } 
+        else {
+            Serial.printf("[HTTPS] Unable to connect\n");
         }
-        else
-        {
-            Serial.print("Error code: ");
-            Serial.println(response);
-        }
-        http.end();
     }
 }
 
@@ -425,16 +432,11 @@ void TimeServicesCalls()
     {
         lastTime = millis();
 
-        ntp.update();
-        time_t epochTime = ntp.getEpochTime();
-        struct tm *ptm = gmtime((time_t *)&epochTime);
-        int hh = ntp.getHours();
-        int mm = ntp.getMinutes();
-        int ss = ntp.getSeconds();
-        int dd = ntp.getDay();
-        int mo = ptm->tm_mon + 1;
-        int yy = ptm->tm_year + 1900;
-
-        Serial.printf("NTP: %d/%d/%d %d:%d:%d\r\n", dd, mo, yy, hh, mm, ss);
+        time_t now = time(nullptr);
+        Serial.println("");
+        struct tm timeinfo;
+        gmtime_r(&now, &timeinfo);
+        Serial.print("Current time: ");
+        Serial.print(asctime(&timeinfo));
     }
 }
