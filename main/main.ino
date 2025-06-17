@@ -19,7 +19,6 @@ static String PSSK = "";
 static ESP8266WebServer wserver(80);
 static bool bInternetConnected = false;
 static char ListWiFis[LIST_WIFIS_SIZE][64];
-static X509List cert(CERTIFICATE);
 static TFT_eSPI gui = TFT_eSPI(WALLPAPER_WID, WALLPAPER_HEI);
 
 static void WiFiSetup();
@@ -40,8 +39,18 @@ void setup(void)
     pinMode(TFT_BL_Pin, OUTPUT);
     digitalWrite(TFT_BL_Pin, LOW);
     gui.begin();
+    gui.fillScreen(TFT_BLACK);
     gui.setSwapBytes(true);
     gui.pushImage(0, 0, WALLPAPER_WID, WALLPAPER_HEI, WALLPAPER_BITMAP);
+
+    // gui.fillScreen(TFT_GREY);
+    // gui.setCursor(0, 0, 2);
+    // gui.setTextColor(TFT_WHITE,TFT_BLACK);  tft.setTextSize(1);
+    // // We can now plot text on screen using the "print" class
+    // gui.println("Hello World!");
+
+    // gui.setTextColor(TFT_YELLOW); tft.setTextFont(7);
+    // gui.println(1234.56);
 
     EEPROM.begin(512);
     delay(1000);
@@ -55,7 +64,7 @@ void setup(void)
     wserver.begin();
 
     /* Set time via NTP, as required for x.509 validation */
-    configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 }
 
 void loop()
@@ -149,7 +158,7 @@ void WiFiSetup()
     getPssk(PSSK);
     getAPIs(APIS);
     Serial.printf("[PREFETCH] SSID: %s\r\n", SSID.c_str());
-    Serial.printf("[PREFETCH] PSSK: %s\r\n", PSSK.c_str());    
+    Serial.printf("[PREFETCH] PSSK: %s\r\n", PSSK.c_str());
     Serial.printf("[PREFETCH] APIS: %s\r\n", APIS.c_str());
 
     if (IsASCII(SSID.c_str(), SSID.length()) && IsASCII(PSSK.c_str(), PSSK.length()))
@@ -301,12 +310,13 @@ void ImplSrvSideLoading()
     String StaSsId = doc["ssid"] | "";
     String StaPssk = doc["password"] | "";
 
-    if (apis.length()) {
+    if (apis.length())
+    {
         APIS = apis;
         setAPIs(APIS);
     }
 
-    Serial.printf("Trying SSID: %s, PSSK: %s\n", StaSsId.c_str(), StaPssk.c_str());
+    Serial.printf("Connecting to SSID: %s, PSSK: %s\n", StaSsId.c_str(), StaPssk.c_str());
 
     StaticJsonDocument<200> response;
 
@@ -318,12 +328,8 @@ void ImplSrvSideLoading()
         /* Save credentials */
         setSsId(StaSsId);
         setPssk(StaPssk);
-        // SSID = StaSsId;
-        // PSSK = StaPssk;
-
-        getSsId(SSID);
-        getPssk(PSSK);
-        Serial.printf("Save SSID: %s, PSSK: %s\n", StaSsId.c_str(), StaPssk.c_str());
+        SSID = StaSsId;
+        PSSK = StaPssk;
     }
     else
     {
@@ -355,7 +361,8 @@ void ImplSrvSideConnected()
     )rawliteral";
 
     page.replace("%IP%", WiFi.localIP().toString());
-    if (bInternetConnected) {
+    if (bInternetConnected)
+    {
         wserver.send(200, "text/html", page);
         delay(1000);
         WiFi.softAPdisconnect(true);
@@ -389,54 +396,74 @@ void RenderGuiCalls()
 {
     static uint32_t lastTime = 0;
 
-    /* https://vf-mini.onrender.com/api/users/fbs/123655 */
-    /* echo | openssl s_client -connect vf-mini.onrender.com:443 | openssl x509 -noout -fingerprint -sha1 */
-
-    if (millis() - lastTime > 5000)
+    if (millis() - lastTime > 10000)
     {
         lastTime = millis();
 
         HTTPClient https;
         std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
-        client->setFingerprint("64:51:B0:DA:30:C9:FB:16:C5:4C:95:9B:49:AB:07:EE:CF:10:EB:4E");
+        client->setFingerprint("64:51:B0:DA:30:C9:FB:16:C5:4C:95:9B:49:AB:07:EE:CF:10:EB:4E"); /* See helpers.txt to get fingerprint of URL */
 
-        Serial.print("[HTTPS] begin...\n");
-        if (https.begin(*client, "https://vf-mini.onrender.com/api/users/fbs/123655")) {
+        Serial.printf("API Called: %s\r\n", APIS.c_str());
 
-            Serial.print("[HTTPS] GET...\n");
+        if (https.begin(*client, APIS))
+        {
             int ret = https.GET();
-
-            if (ret > 0) {
-                Serial.printf("[HTTPS] GET... code: %d\n", ret);
-
-                if (ret == HTTP_CODE_OK || ret == HTTP_CODE_MOVED_PERMANENTLY) {
-                String payload = https.getString();
-                Serial.println(payload);
+            Serial.printf("[HTTPS] Method \'GET\' return code: %d\n", ret);
+            if (ret > 0)
+            {
+                if (ret == HTTP_CODE_OK || ret == HTTP_CODE_MOVED_PERMANENTLY)
+                {
+                    String payload = https.getString();
+                    Serial.println(payload);
                 }
-            } else {
-                Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(ret).c_str());
             }
             https.end();
-        } 
-        else {
-            Serial.printf("[HTTPS] Unable to connect\n");
+        }
+        else
+        {
+            Serial.printf("[HTTPS] Unable to connect %s\n", APIS.c_str());
         }
     }
+}
+
+static std::string utlsTimestampToFormatted(uint32_t ts, char *formatted) {
+	char chars[64];
+	time_t timeStamp = (time_t)ts;
+	struct tm *timin = localtime(&timeStamp);
+	strftime(chars, sizeof(chars), formatted, timin);
+	return std::string(chars, strlen(chars));
 }
 
 void TimeServicesCalls()
 {
     static uint32_t lastTime = 0;
 
-    if (millis() - lastTime > 60000)
+    if (millis() - lastTime > 5000)
     {
         lastTime = millis();
 
-        time_t now = time(nullptr);
-        Serial.println("");
-        struct tm timeinfo;
-        gmtime_r(&now, &timeinfo);
-        Serial.print("Current time: ");
-        Serial.print(asctime(&timeinfo));
+        time_t now = time(NULL);
+        /* Convert to local time (assuming UTC+7) */
+        struct tm *ptm = localtime(&now);
+        int yy = ptm->tm_year + 1900;
+        int mo = ptm->tm_mon + 1;
+        int dd = ptm->tm_mday;
+        int hh = ptm->tm_hour;
+        int mm = ptm->tm_min;
+        int ss = ptm->tm_sec;
+
+        Serial.printf("[NTP] %02d/%02d/%04d - %02d:%02d:%02d\r\n", dd, mo, yy, hh, mm, ss);
+
+        gui.setCursor(179, 97, 2);
+        gui.setTextSize(3);
+        gui.println(dd);
+
+        char chars[16];
+        memset(chars, 0, sizeof(chars));
+        sprintf(chars, "%02d.%04d", mo, yy);
+        gui.setCursor(171, 76, 2);
+        gui.setTextSize(1);
+        gui.println(chars);
     }
 }

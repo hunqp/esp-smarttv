@@ -4,8 +4,6 @@
 #include <EEPROM.h>
 #include <Arduino.h>
 
-extern const char CERTIFICATE[] PROGMEM;
-
 extern void getAPIs(String &apis);
 extern void setAPIs(String &apis);
 extern void getSsId(String &ssid);

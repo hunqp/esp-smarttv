@@ -1,0 +1,8 @@
+# Tool convert image to bitmaps
+https://notisrac.github.io/FileToCArray
+
+# Get fingerprint of URL
+echo | openssl s_client -connect vf-mini.onrender.com:443 | openssl x509 -noout -fingerprint -sha1
+
+# Valid API
+https://vf-mini.onrender.com/api/users/fbs/123655
